@@ -6,6 +6,10 @@ from ArticleScraper import ArticleScraper
 import spacy
 from AIEngine import AIEngine
 from collections import defaultdict
+import pathlib
+import pickle
+import joblib
+import bz2file as bz2
 
 
 class ContentModerationAPI:
@@ -14,17 +18,20 @@ class ContentModerationAPI:
         self.api = "/api/v1/"
         self.app =  Flask(__name__)
         self.urlRegex = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-        self.nlpModel = spacy.load("en_core_web_md")
-        self.app.add_url_rule(self.api + "workflow","workflow",self.startWorkFlow,methods=["POST"])
+        self.path = pathlib.Path(__file__).parent.resolve()
+        self.app.add_url_rule(self.api + "predict","predict",self.startWorkFlow,methods=["POST"])
+        self.app.add_url_rule(self.api + "check","check",self.sayHello,methods=["GET"])
+        self.app.before_first_request(self.loadModels)
 
     def getParams(self,request: Optional[str])-> Optional[str]:
         params = request.json if (request.method == 'POST') else request.args
         return params
 
     def startWorkFlow(self):
+        response = defaultdict(dict)
         #Extract comment
         params = self.getParams(request)
-        print(params)
+    
         text = params.get('comments','').get('text','')
         #Step 1
         #Check if it is a url or normal text
@@ -37,8 +44,8 @@ class ContentModerationAPI:
         elif text and not text.isnumeric():
             textData = text
         else:
-            print("Invalid text")
-            return
+            response['error'] = "Invalid text"
+            return jsonify(response)
 
         #Step 2 
         #Clean the text
@@ -46,19 +53,18 @@ class ContentModerationAPI:
         
         #Step 3
         #Predict using voting classifier model
-        output,probabilityMap = AIEngine(cleanedText,self.nlpModel).predictUsingVotingClassifier()
+        output,probabilityMap = AIEngine(cleanedText,self.nlpModel).predictUsingVotingClassifier(self.model)
         
 
         #Step 4
         #Generate output response data
-        response = defaultdict(dict)
         response['comments']['text'] = textData
         response['Prediction'] = output
         for key in params.get("requestedAttributes"):
             response[key]['value'] = probabilityMap[key]
             response[key]['type'] = 'PROBABILITY'
 
-        print(response)
+        
 
         return jsonify(response)
 
@@ -75,8 +81,24 @@ class ContentModerationAPI:
         clean=re.sub(r'\s\w\s',' ',clean)
         clean=re.sub(r'\s(ve)\s|\s(nd)\s|\s(st)\s|\s(th)\s|\s(rd)\s','',clean)
         return clean
+    
+    def sayHello(self):
+        response = {"working":"true"}
+        return jsonify(response)
+
+    def loadModels(self):
+        print("Calling before any request")
+        self.nlpModel = spacy.load("en_core_web_md")
+        # pathToModel = str(self.path) + '/' + 'Voting.pkl'
+        # self.model = joblib.load(open(pathToModel,'rb'))
+        data = bz2.BZ2File("smallModel.pbz2", 'rb')
+        self.model = pickle.load(data)
+        print("Done loading models.")
+
 
 
 if __name__ == "__main__":
     api = ContentModerationAPI()
-    api.app.run()
+    api.app.run(host="0.0.0.0", port=8080)
+else:
+    api = ContentModerationAPI().app
